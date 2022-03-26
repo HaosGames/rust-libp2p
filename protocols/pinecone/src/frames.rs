@@ -33,10 +33,6 @@ pub struct TreePacket {
 pub struct TreeAnnouncement {
     pub(crate) root: Root,
     pub(crate) signatures: Vec<RootAnnouncementSignature>,
-    pub(crate) source: Coordinates,
-    pub(crate) source_key: PublicKey,
-    pub(crate) destination: Coordinates,
-    pub(crate) destination_key: PublicKey,
     pub(crate) receive_time: SystemTime,
     pub(crate) receive_order: SequenceNumber,
 }

@@ -524,10 +524,6 @@ impl Router {
                     sequence_number: self.current_sequence(),
                 },
                 signatures: vec![],
-                source: Default::default(),
-                source_key: self.keypair().public(),
-                destination: Default::default(),
-                destination_key: self.keypair().public(),
                 receive_time: SystemTime::now(),
                 receive_order: self.current_ordering(),
             }
@@ -558,10 +554,6 @@ impl Router {
                 sequence_number: self.next_sequence(),
             },
             signatures: vec![],
-            source: Default::default(),
-            source_key: self.keypair().public(),
-            destination: Default::default(),
-            destination_key: self.keypair().public(),
             receive_time: SystemTime::now(),
             receive_order: 0,
         }

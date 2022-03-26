@@ -50,11 +50,6 @@ pub(crate) struct RootAnnouncementSignature {
 pub(crate) trait TreeRouted {
     fn destination_coordinates(&self) -> Coordinates;
 }
-impl TreeRouted for TreeAnnouncement {
-    fn destination_coordinates(&self) -> Coordinates {
-        self.destination.clone()
-    }
-}
 impl TreeRouted for TreePacket {
     fn destination_coordinates(&self) -> Coordinates {
         self.destination_coordinates.clone()
