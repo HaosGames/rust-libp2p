@@ -38,7 +38,6 @@ impl Default for Coordinates {
     }
 }
 
-
 impl From<TreeAnnouncement> for Coordinates {
     fn from(announcement: TreeAnnouncement) -> Self {
         let mut coordinates = Coordinates::default();

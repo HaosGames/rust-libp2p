@@ -157,7 +157,7 @@ pub struct SnekSetupAck {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SnekTeardown {
     pub(crate) root: Root,
-    pub(crate) destination_key: PublicKey,
+    pub(crate) destination_key: PeerId,
     pub(crate) path_id: SnekPathId,
 }
 

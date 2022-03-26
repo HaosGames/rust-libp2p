@@ -1,4 +1,5 @@
 use crate::frames::Frame;
+use crate::protocol::Pinecone;
 use crate::{protocol, Event, Port};
 use libp2p_core::identity::Keypair;
 use libp2p_core::{upgrade::NegotiationError, PeerId, UpgradeError};
@@ -64,12 +65,6 @@ pub struct Connection {
     // state: State,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum State {
-    Inactive { reported: bool },
-    Active,
-}
-
 impl ConnectionHandler for Connection {
     type InEvent = Event;
     type OutEvent = Event;
@@ -98,17 +93,8 @@ impl ConnectionHandler for Connection {
     }
 
     fn inject_dial_upgrade_error(&mut self, _info: (), error: ConnectionHandlerUpgrErr<Void>) {
-        self.outbound = None; // Request a new substream on the next `poll`.
-        self.inbound = None;
-
-        let error = match error {
-            ConnectionHandlerUpgrErr::Upgrade(UpgradeError::Select(NegotiationError::Failed)) => {
-                return;
-            }
-            // Note: This timeout only covers protocol negotiation.
-            ConnectionHandlerUpgrErr::Timeout => Failure::Timeout,
-            e => Failure::Other { error: Box::new(e) },
-        };
+        self.outbound = None;
+        self.out_events.push_front(Event::RemovePeer);
     }
 
     fn connection_keep_alive(&self) -> KeepAlive {
@@ -119,6 +105,11 @@ impl ConnectionHandler for Connection {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<ConnectionHandlerEvent<protocol::Pinecone, (), Self::OutEvent, Self::Error>> {
+        if self.outbound.is_none() {
+            return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
+                protocol: SubstreamProtocol::new(Pinecone, ()),
+            });
+        }
         // Handle incoming events
         if let Some(event) = self.in_events.pop_back() {
             match event {

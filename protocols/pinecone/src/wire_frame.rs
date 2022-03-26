@@ -20,18 +20,30 @@ pub struct WireFrame {
     frame_length: u16,
 
     // Payload
-    destination: Coordinates,
-    destination_key: PublicKey,
-    source: Coordinates,
-    source_key: PublicKey,
+    destination: Option<Coordinates>,
+    destination_key: Option<PublicKey>,
+    source: Option<Coordinates>,
+    source_key: Option<PublicKey>,
     payload: Vec<u8>,
 }
 impl WireFrame {
     pub fn new(event: Frame) -> Option<Self> {
         match event {
-            Frame::TreeRouted(_) => {}
-            Frame::SnekRouted(_) => {}
-            Frame::TreeAnnouncement(_) => {}
+            Frame::TreeRouted(packet) => {
+                return Some(Self {
+                    version: 1,
+                    frame_type: 0,
+                    extra: [0; 2],
+                    frame_length: 0,
+                    destination: Some(packet.destination_coordinates),
+                    destination_key: Some(packet.destination_key),
+                    source: Some(packet.source_coordinates),
+                    source_key: Some(packet.source_key),
+                    payload: vec![],
+                });
+            }
+            Frame::SnekRouted(packet) => {}
+            Frame::TreeAnnouncement(announcement) => {}
             Frame::SnekBootstrap(_) => {}
             Frame::SnekBootstrapACK(_) => {}
             Frame::SnekSetup(_) => {}

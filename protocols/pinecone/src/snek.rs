@@ -1,6 +1,6 @@
 use crate::frames::{SnekBootstrap, SnekPacket, SnekSetup};
 use crate::tree::Root;
-use crate::{Port, SnekPathId};
+use crate::{Port, SnekPathId, SNEK_EXPIRY_PERIOD};
 use libp2p_core::{PeerId, PublicKey};
 use std::time::SystemTime;
 
@@ -18,6 +18,14 @@ pub(crate) struct SnekPath {
     pub(crate) last_seen: SystemTime,
     pub(crate) root: Root,
     pub(crate) active: bool,
+}
+impl SnekPath {
+    /// `valid` returns true if the update hasn't expired, or false if it has. It is
+    /// required for updates to time out eventually, in the case that paths don't get
+    /// torn down properly for some reason.
+    pub(crate) fn valid(&self) -> bool {
+        self.last_seen.elapsed().unwrap() < SNEK_EXPIRY_PERIOD
+    }
 }
 pub(crate) trait SnekRouted {
     fn destination_key(&self) -> PeerId;
