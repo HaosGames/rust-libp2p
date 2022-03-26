@@ -130,6 +130,10 @@ impl NetworkBehaviour for Router {
             }
         }
 
+        self.maintain_tree(true);
+        //TODO
+        // self.maintain_snek();
+
         // Handle out_events
         if let Some(event) = self.out_events.pop_back() {
             match event {
