@@ -1,0 +1,24 @@
+[package]
+name = "libp2p-pinecone"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+futures = "0.3.1"
+futures-timer = "3.0.2"
+instant = "0.1.11"
+libp2p-core = { version = "0.32.0", path = "../../core", default-features = false }
+libp2p-swarm = { version = "0.35.0", path = "../../swarm" }
+log = "0.4.1"
+rand = "0.7.2"
+void = "1.0"
+
+#[dev-dependencies]
+async-std = "1.6.2"
+libp2p-tcp = { path = "../../transports/tcp" }
+libp2p-noise = { path = "../../transports/noise" }
+libp2p-yamux = { path = "../../muxers/yamux" }
+libp2p-mplex = { path = "../../muxers/mplex" }
+quickcheck = "0.9.0"
