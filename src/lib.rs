@@ -96,6 +96,10 @@ pub use libp2p_mplex as mplex;
 #[cfg_attr(docsrs, doc(cfg(feature = "noise")))]
 #[doc(inline)]
 pub use libp2p_noise as noise;
+#[cfg(feature = "pinecone")]
+#[cfg_attr(docsrs, doc(cfg(feature = "pinecone")))]
+#[doc(inline)]
+pub use libp2p_pinecone as pinecone;
 #[cfg(feature = "ping")]
 #[cfg_attr(docsrs, doc(cfg(feature = "ping")))]
 #[doc(inline)]

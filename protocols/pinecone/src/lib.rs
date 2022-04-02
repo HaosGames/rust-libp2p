@@ -9,7 +9,7 @@ mod wire_frame;
 
 use crate::coordinates::Coordinates;
 use handler::Connection;
-use libp2p_core::identity::Keypair;
+use libp2p_core::identity::ed25519::{Keypair, PublicKey as Ed25519Pub};
 use libp2p_core::{connection::ConnectionId, PeerId, PublicKey};
 use libp2p_swarm::{
     ConnectionHandler, IntoConnectionHandler, NetworkBehaviour, NetworkBehaviourAction,
@@ -34,6 +34,7 @@ use crate::wait_timer::WaitTimer;
 pub type Port = u64;
 pub type SequenceNumber = u64;
 pub type SnekPathId = u64;
+pub type VerificationKey = [u8; 32];
 
 pub(crate) const SNEK_EXPIRY_PERIOD: Duration = Duration::from_secs(60 * 60);
 
@@ -46,11 +47,11 @@ pub struct Router {
     out_events: VecDeque<Event>,
 
     keypair: Keypair,
-    peer_id: PeerId,
+    public_key: VerificationKey,
 
-    parent: PeerId,
-    tree_announcements: BTreeMap<PeerId, TreeAnnouncement>,
-    ports: BTreeMap<PeerId, Port>,
+    parent: VerificationKey,
+    tree_announcements: BTreeMap<VerificationKey, TreeAnnouncement>,
+    ports: BTreeMap<VerificationKey, Port>,
 
     sequence: SequenceNumber,
     ordering: SequenceNumber,
@@ -66,13 +67,11 @@ pub struct Router {
 
 #[derive(Debug)]
 pub enum Event {
-    ReceivedFrame { from: PeerId, frame: Frame },
-    SendFrame { to: PeerId, frame: Frame },
-    NewPeer,
-    AddPeer(PeerId),
-    RegisterPort { port: Port, of: PeerId },
-    RemovePeer,
-    DisablePeer(PeerId),
+    ReceivedFrame { from: VerificationKey, frame: Frame },
+    SendFrame { to: VerificationKey, frame: Frame },
+    AddPeer(VerificationKey),
+    RegisterPort { port: Port, of: VerificationKey },
+    RemovePeer(VerificationKey),
 }
 
 impl NetworkBehaviour for Router {
@@ -90,12 +89,6 @@ impl NetworkBehaviour for Router {
         result: <<Self::ConnectionHandler as IntoConnectionHandler>::Handler as ConnectionHandler>::OutEvent,
     ) {
         match result {
-            Event::NewPeer => {
-                self.in_events.push_front(Event::AddPeer(peer));
-            }
-            Event::RemovePeer => {
-                self.in_events.push_front(Event::DisablePeer(peer));
-            }
             _ => self.in_events.push_front(result),
         }
     }
@@ -105,6 +98,7 @@ impl NetworkBehaviour for Router {
         _: &mut Context<'_>,
         _: &mut impl PollParameters,
     ) -> Poll<NetworkBehaviourAction<Self::OutEvent, Self::ConnectionHandler>> {
+        trace!("Getting polled {:?}", self.public_key);
         // Handle in_events
         if let Some(event) = self.in_events.pop_back() {
             match event {
@@ -134,12 +128,11 @@ impl NetworkBehaviour for Router {
                         self.in_events.push_front(Event::AddPeer(of));
                     }
                 }
-                Event::RemovePeer => {}
-                Event::NewPeer => {}
-                Event::DisablePeer(peer) => {
-                    let port = self.port(peer).unwrap().clone();
-                    self.disconnect_port(port);
-                    self.ports.remove(&peer);
+                Event::RemovePeer(peer) => {
+                    if let Some(port) = self.port(peer).cloned() {
+                        self.disconnect_port(port);
+                        self.ports.remove(&peer);
+                    }
                 }
             }
         }
@@ -156,8 +149,9 @@ impl NetworkBehaviour for Router {
                     return Poll::Pending;
                 }
                 Event::SendFrame { to, frame } => {
+                    let public_key = PublicKey::Ed25519(Ed25519Pub::decode(&to).unwrap());
                     return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
-                        peer_id: to,
+                        peer_id: public_key.to_peer_id(),
                         handler: NotifyHandler::Any,
                         event: Event::SendFrame { to, frame },
                     });
@@ -167,20 +161,15 @@ impl NetworkBehaviour for Router {
                     return Poll::Pending;
                 }
                 Event::RegisterPort { port, of } => {
+                    let public_key = PublicKey::Ed25519(Ed25519Pub::decode(&of).unwrap());
                     return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
-                        peer_id: of,
+                        peer_id: public_key.to_peer_id(),
                         handler: NotifyHandler::Any,
                         event: Event::RegisterPort { port, of },
-                    })
+                    });
                 }
-                Event::RemovePeer => {
-                    return Poll::Pending;
-                }
-                Event::NewPeer => {
-                    return Poll::Pending;
-                }
-                Event::DisablePeer(from) => {
-                    self.in_events.push_front(Event::DisablePeer(from));
+                Event::RemovePeer(from) => {
+                    self.in_events.push_front(Event::RemovePeer(from));
                     return Poll::Pending;
                 }
             }
@@ -192,12 +181,12 @@ impl NetworkBehaviour for Router {
 
 impl Router {
     pub fn new(keypair: Keypair) -> Self {
-        let peer_id = keypair.public().to_peer_id();
+        let peer_id = keypair.public().encode();
         Self {
             in_events: Default::default(),
             out_events: Default::default(),
             keypair,
-            peer_id,
+            public_key: peer_id,
             tree_announcements: Default::default(),
             ports: Default::default(),
             parent: peer_id,
@@ -211,10 +200,10 @@ impl Router {
             candidate: None,
         }
     }
-    pub fn add(&mut self, peer: PeerId) {
+    pub fn add(&mut self, peer: VerificationKey) {
         let port = self.get_new_port();
         self.ports.insert(peer.clone(), port);
-        info!("Added peer {}", peer);
+        info!("Added peer {:?}", peer);
         self.out_events
             .push_front(Event::RegisterPort { port, of: peer });
         self.send_tree_announcement(peer, self.current_announcement());
@@ -283,40 +272,36 @@ impl Router {
         }
     }
 
-    fn tree_announcement(&self, of: PeerId) -> Option<&TreeAnnouncement> {
+    fn tree_announcement(&self, of: VerificationKey) -> Option<&TreeAnnouncement> {
         self.tree_announcements.get(&of)
     }
-    fn set_tree_announcement(&mut self, of: PeerId, announcement: TreeAnnouncement) {
+    fn set_tree_announcement(&mut self, of: VerificationKey, announcement: TreeAnnouncement) {
         self.tree_announcements.insert(of.clone(), announcement);
     }
-    fn port(&self, of: PeerId) -> Option<&Port> {
+    fn port(&self, of: VerificationKey) -> Option<&Port> {
         self.ports.get(&of)
     }
-    fn peers(&self) -> Vec<PeerId> {
+    fn peers(&self) -> Vec<VerificationKey> {
         let mut peers = Vec::new();
         for (peer, _) in &self.ports {
             peers.push(peer.clone());
         }
         peers
     }
-    fn parent(&self) -> PeerId {
+    fn parent(&self) -> VerificationKey {
         self.parent
     }
-    fn set_parent(&mut self, peer: PeerId) {
-        info!(
-            "Setting new parent to {} on port {}",
-            peer,
-            self.port(peer).unwrap_or(&0)
-        );
+    fn set_parent(&mut self, peer: VerificationKey) {
+        info!("Setting new parent to {:?}", peer);
         self.parent = peer;
     }
     fn keypair(&self) -> Keypair {
         self.keypair.clone()
     }
-    fn peer_id(&self) -> PeerId {
-        self.peer_id
+    fn public_key(&self) -> VerificationKey {
+        self.public_key
     }
-    fn get_peer_on_port(&self, port: Port) -> Option<PeerId> {
+    fn get_peer_on_port(&self, port: Port) -> Option<VerificationKey> {
         for (peer, peer_port) in &self.ports {
             if &port == peer_port {
                 return Some(peer.clone());
@@ -356,22 +341,34 @@ impl Router {
         self.announcement_timer = WaitTimer::new(ANNOUNCEMENT_INTERVAL);
     }
     fn send_to_local(&mut self, frame: Frame) {
-        let peer_id = self.peer_id().clone();
+        let peer_id = self.public_key().clone();
         self.send(frame, peer_id);
     }
-    fn send(&mut self, frame: Frame, to: PeerId) {
+    fn send(&mut self, frame: Frame, to: VerificationKey) {
         self.out_events.push_front(Event::SendFrame { to, frame });
     }
+    fn public_key_for_peer_id(&self, id: &PeerId) -> Option<VerificationKey> {
+        for key in self.peers() {
+            if id == &PublicKey::Ed25519(Ed25519Pub::decode(&key).unwrap()).to_peer_id() {
+                return Some(key);
+            }
+        }
+        None
+    }
 
-    fn next_tree_hop(&self, frame: &impl TreeRouted, from: PeerId) -> Option<PeerId> {
+    fn next_tree_hop(
+        &self,
+        frame: &impl TreeRouted,
+        from: VerificationKey,
+    ) -> Option<VerificationKey> {
         if frame.destination_coordinates() == self.coordinates() {
-            return Some(self.peer_id());
+            return Some(self.public_key());
         }
         let our_distance = frame
             .destination_coordinates()
             .distance_to(&self.coordinates());
         if our_distance == 0 {
-            return Some(self.peer_id());
+            return Some(self.public_key());
         }
 
         let mut best_peer = None;
@@ -428,14 +425,14 @@ impl Router {
         }
         better_candidate
     }
-    fn handle_frame(&mut self, frame: Frame, from: PeerId) {
-        trace!("{} Handling Frame...", self.peer_id());
+    fn handle_frame(&mut self, frame: Frame, from: VerificationKey) {
+        trace!("Handling Frame...");
         match frame {
             Frame::TreeRouted(packet) => {
                 trace!("Frame is TreeRouted");
                 if let Some(peer) = self.next_tree_hop(&packet, from) {
                     let peer = peer;
-                    if peer == self.peer_id() {
+                    if peer == self.public_key() {
                         self.send_to_local(Frame::TreeRouted(packet));
                         return;
                     }
@@ -448,7 +445,7 @@ impl Router {
                 trace!("Frame is SnekRouted");
                 if let Some(peer) = self.next_snek_hop(&packet, false, true) {
                     let peer = peer;
-                    if peer == self.peer_id() {
+                    if peer == self.public_key() {
                         self.send_to_local(Frame::SnekRouted(packet));
                         return;
                     }
@@ -484,7 +481,7 @@ impl Router {
             }
         }
     }
-    fn handle_tree_announcement(&mut self, mut frame: TreeAnnouncement, from: PeerId) {
+    fn handle_tree_announcement(&mut self, mut frame: TreeAnnouncement, from: VerificationKey) {
         frame.receive_time = SystemTime::now();
         frame.receive_order = self.next_ordering();
 
@@ -504,25 +501,21 @@ impl Router {
         }
         if from == self.parent() {
             trace!("Announcement came from parent");
-            if frame.is_loop_of_child(&self.peer_id()) {
+            if frame.is_loop_of_child(&self.public_key()) {
                 // SelectNewParentWithWait
                 debug!("Announcement contains loop");
                 self.set_reparent_timer();
                 self.become_root();
                 return;
             }
-            if frame.root.public_key.to_peer_id()
-                < self.current_announcement().root.public_key.to_peer_id()
-            {
+            if frame.root.public_key < self.current_announcement().root.public_key {
                 // SelectNewParentWithWait
                 debug!("Announcement has weaker root");
                 self.set_reparent_timer();
                 self.become_root();
                 return;
             }
-            if frame.root.public_key.to_peer_id()
-                > self.current_announcement().root.public_key.to_peer_id()
-            {
+            if frame.root.public_key > self.current_announcement().root.public_key {
                 // AcceptUpdate
                 debug!("Announcement has stronger root. Forwarding to peers");
                 self.send_tree_announcements_to_all(self.current_announcement());
@@ -543,23 +536,19 @@ impl Router {
             }
         } else {
             trace!("Announcement didn't come from parent");
-            if frame.is_loop_of_child(&self.peer_id()) {
+            if frame.is_loop_of_child(&self.public_key()) {
                 // DropFrame
                 trace!("Announcement contains loop. Dropping");
                 return;
             }
-            if frame.root.public_key.to_peer_id()
-                > self.current_announcement().root.public_key.to_peer_id()
-            {
+            if frame.root.public_key > self.current_announcement().root.public_key {
                 // AcceptNewParent
                 trace!("Announcement has stronger root. Forwarding to peers");
                 self.set_parent(from.clone());
                 self.send_tree_announcements_to_all(self.current_announcement());
                 return;
             }
-            if frame.root.public_key.to_peer_id()
-                < self.current_announcement().root.public_key.to_peer_id()
-            {
+            if frame.root.public_key < self.current_announcement().root.public_key {
                 // InformPeerOfStrongerRoot
                 trace!("Announcement has weaker root. Sending my announcement");
                 self.send_tree_announcement(from, self.current_announcement());
@@ -579,7 +568,7 @@ impl Router {
         } else {
             TreeAnnouncement {
                 root: Root {
-                    public_key: self.keypair().public(),
+                    public_key: self.keypair().public().encode(),
                     sequence_number: self.current_sequence(),
                 },
                 signatures: vec![],
@@ -597,7 +586,7 @@ impl Router {
             self.send_tree_announcement(peer, announcement.clone());
         }
     }
-    fn send_tree_announcement(&mut self, to: PeerId, announcement: TreeAnnouncement) {
+    fn send_tree_announcement(&mut self, to: VerificationKey, announcement: TreeAnnouncement) {
         let port = self.port(to).unwrap();
         let signed_announcement = announcement; // .append_signature(self.keypair(), port); <- is done by the ConnectionHandler
         debug!(
@@ -609,7 +598,7 @@ impl Router {
     fn new_tree_announcement(&mut self) -> TreeAnnouncement {
         TreeAnnouncement {
             root: Root {
-                public_key: self.keypair().public(),
+                public_key: self.keypair().public().encode(),
                 sequence_number: self.next_sequence(),
             },
             signatures: vec![],
@@ -619,8 +608,8 @@ impl Router {
     }
     fn parent_selection(&mut self) -> bool {
         trace!("Running parent selection...");
-        if self.peer_id() > self.current_root().public_key.to_peer_id() {
-            trace!("My key is stronger than current root");
+        if self.public_key() > self.current_root().public_key {
+            debug!("My key is stronger than current root");
             self.become_root()
         }
         let mut best_root = self.current_root();
@@ -631,7 +620,7 @@ impl Router {
                 if announcement.receive_time.elapsed().unwrap() > ANNOUNCEMENT_TIMEOUT {
                     continue;
                 }
-                if announcement.is_loop_of_child(&self.peer_id()) {
+                if announcement.is_loop_of_child(&self.public_key()) {
                     continue;
                 }
                 if announcement.root > best_root {
@@ -652,6 +641,7 @@ impl Router {
         match best_peer {
             Some(best_peer) => {
                 if best_peer == self.parent() {
+                    debug!("Current parent is the best available parent");
                     return false;
                 }
                 let best_peer = best_peer.clone();
@@ -660,14 +650,15 @@ impl Router {
                 return true;
             }
             None => {
+                debug!("I am root");
                 self.become_root();
                 return false;
             }
         }
     }
     fn become_root(&mut self) {
-        info!("{} becoming root", self.peer_id());
-        self.set_parent(self.peer_id().clone());
+        trace!("Becoming root");
+        self.set_parent(self.public_key().clone());
     }
     fn reparent(&mut self, wait: bool) {
         if self.reparent_timer_expired() || !wait {
@@ -691,7 +682,7 @@ impl Router {
         self.reparent(true);
     }
     fn i_am_root(&self) -> bool {
-        self.peer_id() == self.parent()
+        self.public_key() == self.parent()
     }
 
     /// `maintain_snake` is responsible for working out if we need to send bootstraps
@@ -702,8 +693,8 @@ impl Router {
         // bootstraps are sent up to the next ascending node, but as the root,
         // we already have the highest key on the network.
         let root_announcement = self.current_announcement();
-        let can_bootstrap = self.parent != self.peer_id()
-            && root_announcement.root.public_key != self.keypair().public();
+        let can_bootstrap = self.parent != self.public_key()
+            && root_announcement.root.public_key != self.public_key();
         let mut will_bootstrap = false;
 
         // The ascending node is the node with the next highest key.
@@ -758,7 +749,7 @@ impl Router {
         // If we are the root node then there's no point in trying to bootstrap. We
         // already have the highest public key on the network so a bootstrap won't be
         // able to go anywhere in ascending order.
-        if self.parent == self.peer_id() {
+        if self.parent == self.public_key() {
             trace!("Not bootstrapping because I am root");
             return;
         }
@@ -783,13 +774,13 @@ impl Router {
         // the same root node when processing the update.
         let frame = SnekBootstrap {
             root: self.current_root(),
-            destination_key: self.keypair().public(),
+            destination_key: self.public_key(),
             source: self.coordinates(),
             path_id: thread_rng().gen(),
         };
 
         if let Some(peer) = self.next_snek_hop(&frame, true, false) {
-            trace!("Bootstrapping path {} to {}", frame.path_id, peer);
+            trace!("Bootstrapping path {} ", frame.path_id);
             self.send(Frame::SnekBootstrap(frame), peer);
         }
         trace!("Not bootstrapping because no next hop was found");
@@ -800,26 +791,26 @@ impl Router {
         frame: &impl SnekRouted,
         bootstrap: bool,
         traffic: bool,
-    ) -> Option<PeerId> {
+    ) -> Option<VerificationKey> {
         let destination_key = frame.destination_key();
         // If the message isn't a bootstrap message and the destination is for our
         // own public key, handle the frame locally — it's basically loopback.
-        if !bootstrap && self.peer_id() == destination_key {
-            return Some(self.peer_id());
+        if !bootstrap && self.public_key() == destination_key {
+            return Some(self.public_key());
         }
 
         // We start off with our own key as the best key. Any suitable next-hop
         // candidate has to improve on our own key in order to forward the frame.
         let mut best_peer = None;
         if !traffic {
-            best_peer = Some(self.peer_id());
+            best_peer = Some(self.public_key());
         }
-        let mut best_key = self.peer_id();
+        let mut best_key = self.public_key();
 
         // Check if we can use the path to the root via our parent as a starting
         // point. We can't do this if we are the root node as there would be no
         // parent or ascending paths.
-        if self.parent() != self.peer_id() {
+        if self.parent() != self.public_key() {
             if bootstrap && best_key == destination_key {
                 // Bootstraps always start working towards thear root so that they
                 // go somewhere rather than getting stuck.
@@ -827,11 +818,11 @@ impl Router {
             if Self::dht_ordered(
                 &best_key,
                 &destination_key,
-                &self.current_announcement().root.public_key.to_peer_id(),
+                &self.current_announcement().root.public_key,
             ) {
                 // The destination key is higher than our own key, so start using
                 // the path to the root as the first candidate.
-                best_key = self.current_announcement().root.public_key.to_peer_id();
+                best_key = self.current_announcement().root.public_key;
                 best_peer = Some(self.parent())
             }
 
@@ -841,7 +832,7 @@ impl Router {
                 .current_announcement()
                 .signatures
                 .iter()
-                .map(|x| x.signing_public_key.to_peer_id())
+                .map(|x| x.signing_public_key)
             {
                 if !bootstrap && ancestor == destination_key && best_key != destination_key {
                     best_key = ancestor;
@@ -859,18 +850,14 @@ impl Router {
         for (peer, announcement) in &self.tree_announcements {
             for hop in &announcement.signatures {
                 if !bootstrap
-                    && hop.signing_public_key.to_peer_id() == destination_key
+                    && hop.signing_public_key == destination_key
                     && best_key != destination_key
                 {
-                    best_key = hop.signing_public_key.to_peer_id();
+                    best_key = hop.signing_public_key;
                     best_peer = Some(peer.clone());
                 }
-                if Self::dht_ordered(
-                    &destination_key,
-                    &hop.signing_public_key.to_peer_id(),
-                    &best_key,
-                ) {
-                    best_key = hop.signing_public_key.to_peer_id();
+                if Self::dht_ordered(&destination_key, &hop.signing_public_key, &best_key) {
+                    best_key = hop.signing_public_key;
                     best_peer = Some(peer.clone());
                 }
             }
@@ -927,11 +914,11 @@ impl Router {
                 destination_coordinates: frame.source.clone(),
                 destination_key: frame.destination_key,
                 source_coordinates: self.coordinates(),
-                source_key: self.keypair().public(),
+                source_key: self.public_key(),
                 root: self.current_root(),
                 path_id: frame.path_id,
             };
-            if let Some(peer) = self.next_tree_hop(&frame, self.peer_id()) {
+            if let Some(peer) = self.next_tree_hop(&frame, self.public_key()) {
                 self.send(Frame::SnekBootstrapACK(frame), peer);
             }
         }
@@ -943,7 +930,7 @@ impl Router {
     /// packets to the network.
     fn handle_snek_bootstrap_ack(&mut self, rx: SnekBootstrapAck) {
         let mut update = false;
-        if rx.source_key == self.keypair().public() {
+        if rx.source_key == self.public_key() {
             // We received a bootstrap ACK from ourselves. This shouldn't happen,
             // so either another node has forwarded it to us incorrectly, or
             // a routing loop has occurred somewhere. Don't act on the bootstrap
@@ -956,14 +943,14 @@ impl Router {
             if let Some(ascending) = self.paths.get(&asc) {
                 if ascending.valid() {
                     // We already have an ascending entry and it hasn't expired yet.
-                    if ascending.origin == rx.source_key.to_peer_id() && rx.path_id != asc.path_id {
+                    if ascending.origin == rx.source_key && rx.path_id != asc.path_id {
                         // We've received another bootstrap ACK from our direct ascending node.
                         // Just refresh the record and then send a new path setup message to
                         // that node.
                         update = true
                     } else if Self::dht_ordered(
-                        &self.peer_id(),
-                        &rx.source_key.to_peer_id(),
+                        &self.public_key(),
+                        &rx.source_key,
                         &ascending.origin,
                     ) {
                         // We know about an ascending node already but it turns out that this
@@ -974,7 +961,7 @@ impl Router {
                     }
                 } else {
                     // Ascending Path expired.
-                    if self.keypair().public().to_peer_id() < rx.source_key.to_peer_id() {
+                    if self.public_key() < rx.source_key {
                         // We don't know about an ascending node and at the moment we don't know
                         // any better candidates, so we'll accept a bootstrap ACK from a node with a
                         // key higher than ours (so that it matches descending order).
@@ -984,7 +971,7 @@ impl Router {
             }
         } else if None == self.ascending_path {
             // We don't have an ascending entry
-            if self.keypair().public().to_peer_id() < rx.source_key.to_peer_id() {
+            if self.public_key() < rx.source_key {
                 // We don't know about an ascending node and at the moment we don't know
                 // any better candidates, so we'll accept a bootstrap ACK from a node with a
                 // key higher than ours (so that it matches descending order).
@@ -1007,10 +994,10 @@ impl Router {
             root: self.current_root(),
             destination: rx.source_coordinates,
             destination_key: rx.source_key.clone(),
-            source_key: self.keypair().public(),
+            source_key: self.public_key(),
             path_id: rx.path_id,
         };
-        let next_hop = self.next_tree_hop(&setup, self.peer_id());
+        let next_hop = self.next_tree_hop(&setup, self.public_key());
 
         // Importantly, we will only create a DHT entry if it appears as though our next
         // hop has actually accepted the packet. Otherwise we'll create a path entry and
@@ -1021,18 +1008,18 @@ impl Router {
                 return;
             }
             Some(next_peer) => {
-                if self.peer_id() == next_peer {
+                if self.public_key() == next_peer {
                     // The peer is local, which shouldn't happen.
                     return;
                 }
                 self.send(Frame::SnekSetup(setup), next_peer);
                 let index = SnekPathIndex {
-                    public_key: self.peer_id(),
+                    public_key: self.public_key(),
                     path_id: rx.path_id.clone(),
                 };
                 let entry = SnekPath {
-                    origin: rx.source_key.to_peer_id(),
-                    target: rx.source_key.to_peer_id(),
+                    origin: rx.source_key,
+                    target: rx.source_key,
                     source: 0,
                     destination: self.port(next_peer).unwrap().clone(),
                     last_seen: SystemTime::now(),
@@ -1046,7 +1033,7 @@ impl Router {
                 for (dht_key, entry) in &self.paths.clone() {
                     if entry.source == 0
                         && dht_key.public_key /*TODO dht_key.public_key OR entry.public_key which doesn't exist*/
-                        != rx.source_key.to_peer_id()
+                        != rx.source_key
                     {
                         self.send_teardown_for_existing_path(
                             0,
@@ -1067,10 +1054,10 @@ impl Router {
     /// processed by each node on the path.
     fn handle_setup(&mut self, from: Port, rx: SnekSetup, next_hop: Port) {
         if self.current_root() != rx.root {
-            self.send_teardown_for_rejected_path(rx.source_key.to_peer_id(), rx.path_id, from);
+            self.send_teardown_for_rejected_path(rx.source_key, rx.path_id, from);
         }
         let index = SnekPathIndex {
-            public_key: rx.source_key.to_peer_id(),
+            public_key: rx.source_key,
             path_id: rx.path_id,
         };
         // If we already have a path for this public key and path ID combo, which
@@ -1079,39 +1066,39 @@ impl Router {
         // problem. This will probably trigger a new setup, but that's OK, it should
         // have a new path ID.
         if self.paths.contains_key(&index) {
-            self.send_teardown_for_existing_path(0, rx.source_key.to_peer_id(), rx.path_id);
-            self.send_teardown_for_rejected_path(rx.source_key.to_peer_id(), rx.path_id, from);
+            self.send_teardown_for_existing_path(0, rx.source_key, rx.path_id);
+            self.send_teardown_for_rejected_path(rx.source_key, rx.path_id, from);
             return;
         }
         // If we're at the destination of the setup then update our predecessor
         // with information from the bootstrap.
-        if rx.destination_key == self.keypair().public() {
+        if rx.destination_key == self.public_key() {
             let mut update = false;
             if self.current_root() == rx.root {
                 // The root key in the bootstrap ACK doesn't match our own key, or the
                 // sequence doesn't match, so it is quite possible that routing setup packets
                 // using tree routing would fail.
-            } else if rx.source_key.to_peer_id() < self.peer_id() {
+            } else if rx.source_key < self.public_key() {
                 // The bootstrapping key should be less than ours but it isn't.
             } else if let Some(desc) = &self.descending_path {
                 let descending = self.paths.get(desc).unwrap();
                 if descending.valid() {
                     // We already have a descending entry and it hasn't expired.
-                    if desc.public_key == rx.source_key.to_peer_id() && rx.path_id != desc.path_id {
+                    if desc.public_key == rx.source_key && rx.path_id != desc.path_id {
                         // We've received another bootstrap from our direct descending node.
                         // Send back an acknowledgement as this is OK.
                         update = true;
                     } else if Self::dht_ordered(
                         &desc.public_key,
-                        &rx.source_key.to_peer_id(),
-                        &self.peer_id(),
+                        &rx.source_key,
+                        &self.public_key(),
                     ) {
                         // The bootstrapping node is closer to us than our previous descending
                         // node was.
                         update = true;
                     } else {
                         // Our descending entry has expired
-                        if rx.source_key.to_peer_id() < self.peer_id() {
+                        if rx.source_key < self.public_key() {
                             // The bootstrapping key is less than ours so we'll acknowledge it.
                             update = true;
                         }
@@ -1119,7 +1106,7 @@ impl Router {
                 }
             } else if let None = self.descending_path {
                 // We don't have a descending entry
-                if rx.source_key.to_peer_id() < self.peer_id() {
+                if rx.source_key < self.public_key() {
                     // The bootstrapping key is less than ours so we'll acknowledge it.
                     update = true;
                 }
@@ -1129,7 +1116,7 @@ impl Router {
                 // yet, so we'll just ignore the bootstrap.
             }
             if !update {
-                self.send_teardown_for_rejected_path(rx.source_key.to_peer_id(), rx.path_id, from);
+                self.send_teardown_for_rejected_path(rx.source_key, rx.path_id, from);
                 return;
             }
             if let Some(previous_path) = &self.descending_path.clone() {
@@ -1140,8 +1127,8 @@ impl Router {
                 );
             }
             let entry = SnekPath {
-                origin: rx.source_key.to_peer_id(),
-                target: rx.destination_key.to_peer_id(),
+                origin: rx.source_key,
+                target: rx.destination_key,
                 source: from.clone(),
                 destination: 0,
                 last_seen: SystemTime::now(),
@@ -1166,16 +1153,16 @@ impl Router {
         // Try to forward the setup onto the next node first. If we
         // can't do that then there's no point in keeping the path.
         let next_peer = self.get_peer_on_port(next_hop).unwrap();
-        if next_peer == self.peer_id() {
+        if next_peer == self.public_key() {
             debug!("Next hop for {:?} is local, which shouldn't happen.", rx);
-            self.send_teardown_for_rejected_path(rx.source_key.to_peer_id(), rx.path_id, from);
+            self.send_teardown_for_rejected_path(rx.source_key, rx.path_id, from);
             return;
         }
         // Add a new routing table entry as we are intermediate to
         // the path.
         let entry = SnekPath {
-            origin: rx.source_key.to_peer_id(),
-            target: rx.destination_key.to_peer_id(),
+            origin: rx.source_key,
+            target: rx.destination_key,
             source: from,          // node with lower of the two keys
             destination: next_hop, // node with higher of the two keys
             last_seen: SystemTime::now(),
@@ -1192,10 +1179,7 @@ impl Router {
         // (i.e. we haven't received a setup ACK for it yet) and must have arrived
         // from the port that the entry was populated with.
         for (key, entry) in self.paths.clone() {
-            if entry.active
-                || key.public_key != rx.destination_key.to_peer_id()
-                || key.path_id != rx.path_id
-            {
+            if entry.active || key.public_key != rx.destination_key || key.path_id != rx.path_id {
                 continue;
             }
             if from == 0 {}
@@ -1207,10 +1191,7 @@ impl Router {
             }
         }
         for (key, entry) in self.paths.iter_mut() {
-            if entry.active
-                || key.public_key != rx.destination_key.to_peer_id()
-                || key.path_id != rx.path_id
-            {
+            if entry.active || key.public_key != rx.destination_key || key.path_id != rx.path_id {
                 continue;
             }
             if from == 0 {}
@@ -1236,7 +1217,12 @@ impl Router {
     /// `teardown_path` processes a teardown message by tearing down any
     /// related routes, returning a slice of next-hop candidates that the
     /// teardown must be forwarded to.
-    fn teardown_path(&mut self, from: Port, path_key: PeerId, path_id: SnekPathId) -> Vec<Port> {
+    fn teardown_path(
+        &mut self,
+        from: Port,
+        path_key: VerificationKey,
+        path_id: SnekPathId,
+    ) -> Vec<Port> {
         if let Some(asc) = &self.ascending_path {
             if asc.public_key == path_key && asc.path_id == path_id {
                 if from == 0 {
@@ -1290,7 +1276,7 @@ impl Router {
     fn send_teardown_for_existing_path(
         &mut self,
         from: Port,
-        path_key: PeerId,
+        path_key: VerificationKey,
         path_id: SnekPathId,
     ) {
         let frame = self.get_teardown(path_key, path_id);
@@ -1301,7 +1287,7 @@ impl Router {
     }
     fn send_teardown_for_rejected_path(
         &mut self,
-        path_key: PeerId,
+        path_key: VerificationKey,
         path_id: SnekPathId,
         via: Port,
     ) {
@@ -1310,7 +1296,7 @@ impl Router {
         self.send(Frame::SnekTeardown(frame), peer);
     }
 
-    fn get_teardown(&self, path_key: PeerId, path_id: SnekPathId) -> SnekTeardown {
+    fn get_teardown(&self, path_key: VerificationKey, path_id: SnekPathId) -> SnekTeardown {
         SnekTeardown {
             root: self.current_root(),
             destination_key: path_key,
@@ -1319,7 +1305,7 @@ impl Router {
     }
     /// `dht_ordered` returns true if the order of A, B and C is
     /// correct, where A < B < C without wrapping.
-    fn dht_ordered(a: &PeerId, b: &PeerId, c: &PeerId) -> bool {
+    fn dht_ordered(a: &VerificationKey, b: &VerificationKey, c: &VerificationKey) -> bool {
         a < b && b < c
     }
 }

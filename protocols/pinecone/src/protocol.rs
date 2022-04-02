@@ -7,20 +7,20 @@ use std::{io, iter, time::Duration};
 use void::Void;
 
 #[derive(Default, Debug, Copy, Clone)]
-pub struct Pinecone;
+pub struct PineconeProtocol;
 
 const PING_SIZE: usize = 32;
 
-impl UpgradeInfo for Pinecone {
+impl UpgradeInfo for PineconeProtocol {
     type Info = &'static [u8];
     type InfoIter = iter::Once<Self::Info>;
 
     fn protocol_info(&self) -> Self::InfoIter {
-        iter::once(b"pinecone")
+        iter::once(b"/pinecone")
     }
 }
 
-impl InboundUpgrade<NegotiatedSubstream> for Pinecone {
+impl InboundUpgrade<NegotiatedSubstream> for PineconeProtocol {
     type Output = NegotiatedSubstream;
     type Error = Void;
     type Future = future::Ready<Result<Self::Output, Self::Error>>;
@@ -30,7 +30,7 @@ impl InboundUpgrade<NegotiatedSubstream> for Pinecone {
     }
 }
 
-impl OutboundUpgrade<NegotiatedSubstream> for Pinecone {
+impl OutboundUpgrade<NegotiatedSubstream> for PineconeProtocol {
     type Output = NegotiatedSubstream;
     type Error = Void;
     type Future = future::Ready<Result<Self::Output, Self::Error>>;

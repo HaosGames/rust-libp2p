@@ -1,18 +1,18 @@
 use crate::frames::{SnekBootstrap, SnekPacket, SnekSetup};
 use crate::tree::Root;
-use crate::{Port, SnekPathId, SNEK_EXPIRY_PERIOD};
-use libp2p_core::{PeerId, PublicKey};
+use crate::{Port, SnekPathId, SNEK_EXPIRY_PERIOD, VerificationKey};
+use libp2p_core::{PeerId};
 use std::time::SystemTime;
 
 #[derive(PartialEq, Eq, Clone, Debug, PartialOrd, Ord, Hash)]
 pub(crate) struct SnekPathIndex {
-    pub(crate) public_key: PeerId,
+    pub(crate) public_key: VerificationKey,
     pub(crate) path_id: SnekPathId,
 }
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub(crate) struct SnekPath {
-    pub(crate) origin: PeerId,
-    pub(crate) target: PeerId,
+    pub(crate) origin: VerificationKey,
+    pub(crate) target: VerificationKey,
     pub(crate) source: Port,
     pub(crate) destination: Port,
     pub(crate) last_seen: SystemTime,
@@ -28,20 +28,20 @@ impl SnekPath {
     }
 }
 pub(crate) trait SnekRouted {
-    fn destination_key(&self) -> PeerId;
+    fn destination_key(&self) -> VerificationKey;
 }
 impl SnekRouted for SnekPacket {
-    fn destination_key(&self) -> PeerId {
-        self.destination_key.to_peer_id()
+    fn destination_key(&self) -> VerificationKey {
+        self.destination_key
     }
 }
 impl SnekRouted for SnekSetup {
-    fn destination_key(&self) -> PeerId {
-        self.destination_key.to_peer_id()
+    fn destination_key(&self) -> VerificationKey {
+        self.destination_key
     }
 }
 impl SnekRouted for SnekBootstrap {
-    fn destination_key(&self) -> PeerId {
-        self.destination_key.to_peer_id()
+    fn destination_key(&self) -> VerificationKey {
+        self.destination_key
     }
 }

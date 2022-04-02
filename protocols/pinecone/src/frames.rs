@@ -1,8 +1,7 @@
 use crate::coordinates::Coordinates;
 use crate::tree::{Root, RootAnnouncementSignature};
-use crate::{Port, SequenceNumber, SnekPathId};
-use libp2p_core::identity::Keypair;
-use libp2p_core::{PeerId, PublicKey};
+use crate::{Port, SequenceNumber, SnekPathId, VerificationKey};
+use libp2p_core::identity::ed25519::Keypair;
 use std::fmt::{Display, Formatter};
 use std::time::SystemTime;
 
@@ -19,15 +18,15 @@ pub enum Frame {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct SnekPacket {
-    pub(crate) destination_key: PublicKey,
-    pub(crate) source_key: PublicKey,
+    pub(crate) destination_key: VerificationKey,
+    pub(crate) source_key: VerificationKey,
+    pub(crate) payload: Vec<u8>,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct TreePacket {
     pub(crate) source_coordinates: Coordinates,
     pub(crate) destination_coordinates: Coordinates,
-    pub(crate) source_key: PublicKey,
-    pub(crate) destination_key: PublicKey,
+    pub(crate) payload: Vec<u8>,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct TreeAnnouncement {
@@ -44,7 +43,7 @@ impl TreeAnnouncement {
     ) -> TreeAnnouncement {
         let public_key = keypair.public();
         let mut to_sign = RootAnnouncementSignature {
-            signing_public_key: public_key.clone(),
+            signing_public_key: public_key.encode(),
             destination_port: destination_port.clone(),
             //TODO
             // signature: None,
@@ -93,9 +92,9 @@ impl TreeAnnouncement {
 
         true
     }*/
-    pub(crate) fn is_loop_of_child(&self, public_key: &PeerId) -> bool {
+    pub(crate) fn is_loop_of_child(&self, public_key: &VerificationKey) -> bool {
         for signature in &self.signatures {
-            if &signature.signing_public_key.to_peer_id() == public_key {
+            if &signature.signing_public_key == public_key {
                 return true;
             }
         }
@@ -127,16 +126,16 @@ impl TreeAnnouncement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SnekBootstrap {
     pub(crate) root: Root,
-    pub(crate) destination_key: PublicKey,
+    pub(crate) destination_key: VerificationKey,
     pub(crate) source: Coordinates,
     pub(crate) path_id: SnekPathId,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct SnekBootstrapAck {
     pub(crate) destination_coordinates: Coordinates,
-    pub(crate) destination_key: PublicKey,
+    pub(crate) destination_key: VerificationKey,
     pub(crate) source_coordinates: Coordinates,
-    pub(crate) source_key: PublicKey,
+    pub(crate) source_key: VerificationKey,
     pub(crate) root: Root,
     pub(crate) path_id: SnekPathId,
 }
@@ -144,20 +143,20 @@ pub struct SnekBootstrapAck {
 pub struct SnekSetup {
     pub(crate) root: Root,
     pub(crate) destination: Coordinates,
-    pub(crate) destination_key: PublicKey,
-    pub(crate) source_key: PublicKey,
+    pub(crate) destination_key: VerificationKey,
+    pub(crate) source_key: VerificationKey,
     pub(crate) path_id: SnekPathId,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct SnekSetupAck {
     pub(crate) root: Root,
-    pub(crate) destination_key: PublicKey,
+    pub(crate) destination_key: VerificationKey,
     pub(crate) path_id: SnekPathId,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct SnekTeardown {
     pub(crate) root: Root,
-    pub(crate) destination_key: PeerId,
+    pub(crate) destination_key: VerificationKey,
     pub(crate) path_id: SnekPathId,
 }
 
@@ -172,11 +171,6 @@ impl Display for TreeAnnouncement {
 }
 impl Display for RootAnnouncementSignature {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "[port:{},addr:{}]",
-            self.destination_port,
-            self.signing_public_key.to_peer_id()
-        )
+        write!(f, "[port:{},addr:]", self.destination_port)
     }
 }

@@ -23,6 +23,7 @@ default = [
     "mplex",
     "noise",
     "ping",
+    "pinecone",
     "plaintext",
     "pnet",
     "relay",

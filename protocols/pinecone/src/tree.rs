@@ -1,21 +1,18 @@
 use crate::coordinates::Coordinates;
 use crate::frames::{SnekBootstrapAck, SnekSetup, TreePacket};
-use crate::{Port, SequenceNumber, TreeAnnouncement};
+use crate::{Port, SequenceNumber, TreeAnnouncement, VerificationKey};
 use libp2p_core::{PeerId, PublicKey};
 use std::cmp::Ordering;
 use std::fmt::{Display, Formatter};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Root {
-    pub(crate) public_key: PublicKey,
+    pub(crate) public_key: VerificationKey,
     pub(crate) sequence_number: SequenceNumber,
 }
 impl PartialOrd<Self> for Root {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        let key = self
-            .public_key
-            .to_peer_id()
-            .cmp(&other.public_key.to_peer_id());
+        let key = self.public_key.cmp(&other.public_key);
         if key != Ordering::Equal {
             return Some(key);
         } else {
@@ -34,15 +31,14 @@ impl Display for Root {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "[sequence:{},addr:{}]",
-            self.sequence_number,
-            self.public_key.to_peer_id()
+            "[sequence:{},addr:{:?}]",
+            self.sequence_number, self.public_key
         )
     }
 }
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct RootAnnouncementSignature {
-    pub(crate) signing_public_key: PublicKey,
+    pub(crate) signing_public_key: VerificationKey,
     pub(crate) destination_port: Port,
     //TODO
     // pub(crate) signature: Signature,
