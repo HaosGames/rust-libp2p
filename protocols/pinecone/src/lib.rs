@@ -51,7 +51,7 @@ pub struct Router {
 
     parent: VerificationKey,
     tree_announcements: BTreeMap<VerificationKey, TreeAnnouncement>,
-    ports: BTreeMap<VerificationKey, Port>,
+    ports: BTreeMap<Port, Option<VerificationKey>>,
 
     sequence: SequenceNumber,
     ordering: SequenceNumber,
@@ -79,7 +79,14 @@ impl NetworkBehaviour for Router {
     type OutEvent = Event;
 
     fn new_handler(&mut self) -> Self::ConnectionHandler {
-        Connection::new(self.keypair.clone())
+        let port = self.get_new_port();
+        let announcement = self.current_announcement();
+        self.ports.insert(port, None);
+        info!(
+            "Registering new peer on port {} and sending announcement",
+            port
+        );
+        Connection::new(self.keypair.clone(), port, announcement)
     }
 
     fn inject_event(
@@ -111,6 +118,7 @@ impl NetworkBehaviour for Router {
                 Event::AddPeer(from) => {
                     if let Some(port) = self.port(from) {
                         let port = port.clone();
+                        trace!("Registering already existing port {} for {:?}", port, from);
                         self.out_events.push_front(Event::RegisterPort {
                             port: port.clone(),
                             of: from,
@@ -130,8 +138,9 @@ impl NetworkBehaviour for Router {
                 }
                 Event::RemovePeer(peer) => {
                     if let Some(port) = self.port(peer).cloned() {
+                        debug!("Removing peer {:?}", peer);
                         self.disconnect_port(port);
-                        self.ports.remove(&peer);
+                        self.ports.insert(port, None);
                     }
                 }
             }
@@ -149,6 +158,7 @@ impl NetworkBehaviour for Router {
                     return Poll::Pending;
                 }
                 Event::SendFrame { to, frame } => {
+                    trace!("Sending {:?} to {:?}", frame, to);
                     let public_key = PublicKey::Ed25519(Ed25519Pub::decode(&to).unwrap());
                     return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
                         peer_id: public_key.to_peer_id(),
@@ -202,7 +212,7 @@ impl Router {
     }
     pub fn add(&mut self, peer: VerificationKey) {
         let port = self.get_new_port();
-        self.ports.insert(peer.clone(), port);
+        self.ports.insert(port, Some(peer));
         info!("Added peer {:?}", peer);
         self.out_events
             .push_front(Event::RegisterPort { port, of: peer });
@@ -210,14 +220,7 @@ impl Router {
     }
     fn get_new_port(&self) -> Port {
         for i in 1.. {
-            let mut port_exists = false;
-            for port in self.ports.values() {
-                if &i == port {
-                    port_exists = true;
-                    break;
-                }
-            }
-            if port_exists {
+            if self.ports.contains_key(&i) {
                 continue;
             } else {
                 return i;
@@ -279,12 +282,21 @@ impl Router {
         self.tree_announcements.insert(of.clone(), announcement);
     }
     fn port(&self, of: VerificationKey) -> Option<&Port> {
-        self.ports.get(&of)
+        for (port, peer) in &self.ports {
+            if let Some(peer) = peer {
+                if peer == &of {
+                    return Some(&port);
+                }
+            }
+        }
+        None
     }
     fn peers(&self) -> Vec<VerificationKey> {
         let mut peers = Vec::new();
-        for (peer, _) in &self.ports {
-            peers.push(peer.clone());
+        for (port, peer) in &self.ports {
+            if let Some(peer) = peer {
+                peers.push(peer.clone());
+            }
         }
         peers
     }
@@ -292,7 +304,7 @@ impl Router {
         self.parent
     }
     fn set_parent(&mut self, peer: VerificationKey) {
-        info!("Setting new parent to {:?}", peer);
+        info!("Setting parent to {:?}", peer);
         self.parent = peer;
     }
     fn keypair(&self) -> Keypair {
@@ -302,10 +314,8 @@ impl Router {
         self.public_key
     }
     fn get_peer_on_port(&self, port: Port) -> Option<VerificationKey> {
-        for (peer, peer_port) in &self.ports {
-            if &port == peer_port {
-                return Some(peer.clone());
-            }
+        if let Some(peer) = self.ports.get(&port) {
+            return peer.clone();
         }
         None
     }

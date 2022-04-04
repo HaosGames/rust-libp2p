@@ -188,6 +188,9 @@ impl Decoder for PineconeCodec {
     type Error = std::io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        if src.is_empty() {
+            return Err(Self::Error::new(ErrorKind::Other, "No bytes to decode"));
+        }
         if src.len() < 4 || !src.starts_with(FRAME_MAGIC_BYTES.as_slice()) {
             return Err(Self::Error::new(
                 ErrorKind::Other,

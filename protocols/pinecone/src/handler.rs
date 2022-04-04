@@ -1,7 +1,7 @@
 use crate::frames::Frame;
 use crate::protocol::PineconeProtocol;
 use crate::wire_frame::PineconeCodec;
-use crate::{protocol, Event, Port, VerificationKey};
+use crate::{protocol, Event, Port, TreeAnnouncement, VerificationKey};
 use asynchronous_codec::{Framed, FramedRead, FramedWrite};
 use futures::{SinkExt, StreamExt};
 use libp2p_core::identity::ed25519::Keypair;
@@ -10,7 +10,7 @@ use libp2p_swarm::{
     ConnectionHandler, ConnectionHandlerEvent, ConnectionHandlerUpgrErr, KeepAlive,
     NegotiatedSubstream, SubstreamProtocol,
 };
-use log::{debug, trace, warn};
+use log::{debug, error, trace, warn};
 use std::collections::VecDeque;
 use std::future::Future;
 use std::{
@@ -60,8 +60,10 @@ pub struct Connection {
     inbound: Option<Framed<NegotiatedSubstream, PineconeCodec>>,
     outbound: Option<Framed<NegotiatedSubstream, PineconeCodec>>,
     creating_outbound: bool,
-    port: Option<Port>,
+    port: Port,
     peer: Option<VerificationKey>,
+
+    keepalive: KeepAlive,
     // config: Config,
     // timer: Delay,
     // pending_errors: VecDeque<Failure>,
@@ -100,12 +102,11 @@ impl ConnectionHandler for Connection {
     ) {
         self.outbound = Some(Framed::new(stream, PineconeCodec));
         self.creating_outbound = false;
-        self.peer = Some(public_key);
-        self.out_events.push_front(Event::AddPeer(public_key));
         debug!("Set outbound stream");
     }
 
     fn inject_event(&mut self, event: Event) {
+        trace!("Injecting {:?}", event);
         self.in_events.push_front(event);
     }
 
@@ -116,14 +117,11 @@ impl ConnectionHandler for Connection {
     ) {
         self.outbound = None;
         self.creating_outbound = false;
-        if let Some(public_key) = self.peer {
-            self.out_events.push_front(Event::RemovePeer(public_key));
-        }
         warn!("Couldn't upgrade connection {:?}", error)
     }
 
     fn connection_keep_alive(&self) -> KeepAlive {
-        KeepAlive::Yes
+        self.keepalive
     }
 
     fn poll(
@@ -137,6 +135,13 @@ impl ConnectionHandler for Connection {
             Self::Error,
         >,
     > {
+        if let Some(peer) = self.peer {
+            if peer == self.keypair.public().encode() {
+                self.peer = None;
+                error!("Added myself as Peer");
+                panic!();
+            }
+        }
         if self.outbound.is_none() && !self.creating_outbound {
             self.creating_outbound = true;
             trace!("Requesting outbound stream");
@@ -148,26 +153,30 @@ impl ConnectionHandler for Connection {
         if let Some(event) = self.in_events.pop_back() {
             match event {
                 Event::RegisterPort { port, of } => {
-                    self.port = Some(port);
+                    self.port = port;
                     self.peer = Some(of);
                 }
                 Event::SendFrame { to, frame } => {
-                    if let Some(public_key) = self.peer {
-                        match frame {
-                            Frame::TreeAnnouncement(ann) => {
-                                if let Some(port) = self.port {
-                                    let signed = ann.append_signature(self.keypair.clone(), port);
-                                    // Send signed announcement to peer
-                                    if let Some(stream) = &mut self.outbound {
-                                        stream.start_send_unpin(Frame::TreeAnnouncement(signed));
-                                    }
-                                }
+                    match frame {
+                        Frame::TreeAnnouncement(ann) => {
+                            let signed = ann.append_signature(self.keypair.clone(), self.port);
+                            // Send signed announcement to peer
+                            if let Some(stream) = &mut self.outbound {
+                                debug!("Sending to port {}: {:?}", self.port, signed);
+                                stream.start_send_unpin(Frame::TreeAnnouncement(signed));
+                            } else {
+                                trace!("Sending TreeAnnouncement next round");
+                                self.in_events.push_front(Event::SendFrame {
+                                    to,
+                                    frame: Frame::TreeAnnouncement(ann),
+                                });
                             }
-                            _ => {
-                                // Send frame to peer
-                                if let Some(stream) = &mut self.outbound {
-                                    stream.start_send_unpin(frame);
-                                }
+                        }
+                        _ => {
+                            // Send frame to peer
+                            if let Some(stream) = &mut self.outbound {
+                                debug!("Sending {:?}", frame);
+                                stream.start_send_unpin(frame);
                             }
                         }
                     }
@@ -175,32 +184,49 @@ impl ConnectionHandler for Connection {
                 _ => self.out_events.push_front(event),
             }
         }
+        if let Some(stream) = &mut self.outbound {
+            stream.flush();
+        }
 
         // Receive frames from peer
-        loop {
-            if let Some(stream) = &mut self.inbound {
-                match stream.poll_next_unpin(cx) {
-                    Poll::Ready(option) => match option {
-                        None => {
-                            self.inbound = None;
-                            warn!("Inbound Stream was terminated");
-                            break;
+        if let Some(stream) = &mut self.inbound {
+            match stream.poll_next_unpin(cx) {
+                Poll::Ready(option) => match option {
+                    None => {
+                        self.inbound = None;
+                        self.keepalive = KeepAlive::No;
+                        if let Some(peer) = self.peer {
+                            self.out_events.push_front(Event::RemovePeer(peer));
+                            self.peer = None;
                         }
-                        Some(result) => match result {
-                            Ok(frame) => {
-                                debug!("Decoded frame {:?}", frame);
-                                self.out_events.push_front(Event::ReceivedFrame {
-                                    from: self.peer.unwrap(),
-                                    frame,
-                                });
+                        warn!("Inbound Stream was terminated");
+                    }
+                    Some(result) => match result {
+                        Ok(frame) => {
+                            if self.peer.is_none() {
+                                match &frame {
+                                    Frame::TreeAnnouncement(announcement) => {
+                                        if let Some(sig) = announcement.signatures.last() {
+                                            self.peer = Some(sig.signing_public_key);
+                                            self.out_events
+                                                .push_front(Event::AddPeer(sig.signing_public_key));
+                                        }
+                                    }
+                                    _ => {}
+                                }
                             }
-                            Err(e) => {
-                                warn!("Could not decode frame {:?}", e);
-                            }
-                        },
+                            debug!("Decoded frame {:?}", frame);
+                            self.out_events.push_front(Event::ReceivedFrame {
+                                from: self.peer.unwrap(),
+                                frame,
+                            });
+                        }
+                        Err(e) => {
+                            warn!("Could not decode frame {:?}", e);
+                        }
                     },
-                    Poll::Pending => break,
-                }
+                },
+                Poll::Pending => {}
             }
         }
 
@@ -214,16 +240,22 @@ impl ConnectionHandler for Connection {
 }
 
 impl Connection {
-    pub fn new(keypair: Keypair) -> Self {
+    pub fn new(keypair: Keypair, port: Port, announcement: TreeAnnouncement) -> Self {
+        let mut in_events: VecDeque<Event> = Default::default();
+        in_events.push_front(Event::SendFrame {
+            to: [0; 32],
+            frame: Frame::TreeAnnouncement(announcement),
+        });
         Connection {
             keypair,
-            in_events: Default::default(),
+            in_events,
             out_events: Default::default(),
             inbound: None,
             outbound: None,
             creating_outbound: false,
-            port: None,
+            port,
             peer: None,
+            keepalive: KeepAlive::Yes,
         }
     }
 }
