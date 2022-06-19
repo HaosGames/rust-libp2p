@@ -49,6 +49,7 @@ metrics = ["dep:libp2p-metrics"]
 mdns = ["dep:libp2p-mdns"]
 mplex = ["dep:libp2p-mplex"]
 noise = ["dep:libp2p-noise"]
+pinecone = ["libp2p-pinecone"]
 ping = ["dep:libp2p-ping", "libp2p-metrics?/ping"]
 plaintext = ["dep:libp2p-plaintext"]
 pnet = ["dep:libp2p-pnet"]
@@ -86,6 +87,7 @@ libp2p-kad = { version = "0.37.1", path = "protocols/kad", optional = true }
 libp2p-metrics = { version = "0.6.0", path = "misc/metrics", optional = true }
 libp2p-mplex = { version = "0.33.0", path = "muxers/mplex", optional = true }
 libp2p-noise = { version = "0.36.0", path = "transports/noise", optional = true }
+libp2p-pinecone = { version = "0.1.0", path = "protocols/pinecone", optional = true }
 libp2p-ping = { version = "0.36.0", path = "protocols/ping", optional = true }
 libp2p-plaintext = { version = "0.33.0", path = "transports/plaintext", optional = true }
 libp2p-pnet = { version = "0.22.0", path = "transports/pnet", optional = true }
