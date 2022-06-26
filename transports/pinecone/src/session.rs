@@ -10,27 +10,25 @@ use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{Receiver, Sender};
 
 /// A session with a node in the network. This is being given out
-/// by the `dial_receive` method on [`Client`] and implements [`AsyncRead`].
-pub struct ReceiveSession {
-    pub(crate) router_key: PublicKey,
-    pub(crate) dialed_key: PublicKey,
-    pub(crate) download: Receiver<Frame>,
-}
-/// A session with a node in the network. This is being given out
-/// by the `dial_send` method on [`Client`] and implements [`AsyncWrite`].
+/// by the `dial` method on [`Client`].
 ///
 /// It is not guaranteed that sent data actually arrives at it's destination;
 /// that is the node with the public key that this session was created for.
 /// If the node doesn't exist in the network or routing of data fails due to another reason
 /// the data that is being sent is dropped by the network.
-#[derive(Clone)]
-pub struct SendSession {
+/// This implements [`AsyncRead`]/[`AsyncWrite`].
+pub struct Session {
     pub(crate) router_key: PublicKey,
     pub(crate) dialed_key: PublicKey,
     pub(crate) upload: Sender<Frame>,
+    pub(crate) download: Receiver<Frame>,
 }
-impl AsyncRead for ReceiveSession {
-    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+impl AsyncRead for Session {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
         match self.get_mut().download.poll_recv(cx) {
             Poll::Ready(result) => match result {
                 None => Poll::Ready(Err(Error::new(
@@ -54,7 +52,7 @@ impl AsyncRead for ReceiveSession {
         }
     }
 }
-impl AsyncWrite for SendSession {
+impl AsyncWrite for Session {
     fn poll_write(
         self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
