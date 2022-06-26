@@ -3,6 +3,7 @@ mod frames;
 mod handler;
 mod protocol;
 mod snek;
+mod tests;
 mod tree;
 mod wait_timer;
 mod wire_frame;
@@ -91,7 +92,7 @@ impl NetworkBehaviour for Router {
 
     fn inject_event(
         &mut self,
-        peer: PeerId,
+        _: PeerId,
         _: ConnectionId,
         result: <<Self::ConnectionHandler as IntoConnectionHandler>::Handler as ConnectionHandler>::OutEvent,
     ) {
@@ -150,42 +151,42 @@ impl NetworkBehaviour for Router {
         self.maintain_snek();
 
         // Handle out_events
-        if let Some(event) = self.out_events.pop_back() {
+        return if let Some(event) = self.out_events.pop_back() {
             match event {
                 Event::ReceivedFrame { from, frame } => {
                     self.in_events
                         .push_front(Event::ReceivedFrame { from, frame });
-                    return Poll::Pending;
+                    Poll::Pending
                 }
                 Event::SendFrame { to, frame } => {
                     trace!("Sending {:?} to {:?}", frame, to);
                     let public_key = PublicKey::Ed25519(Ed25519Pub::decode(&to).unwrap());
-                    return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
+                    Poll::Ready(NetworkBehaviourAction::NotifyHandler {
                         peer_id: public_key.to_peer_id(),
                         handler: NotifyHandler::Any,
                         event: Event::SendFrame { to, frame },
-                    });
+                    })
                 }
                 Event::AddPeer(from) => {
                     self.in_events.push_front(Event::AddPeer(from));
-                    return Poll::Pending;
+                    Poll::Pending
                 }
                 Event::RegisterPort { port, of } => {
                     let public_key = PublicKey::Ed25519(Ed25519Pub::decode(&of).unwrap());
-                    return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
+                    Poll::Ready(NetworkBehaviourAction::NotifyHandler {
                         peer_id: public_key.to_peer_id(),
                         handler: NotifyHandler::Any,
                         event: Event::RegisterPort { port, of },
-                    });
+                    })
                 }
                 Event::RemovePeer(from) => {
                     self.in_events.push_front(Event::RemovePeer(from));
-                    return Poll::Pending;
+                    Poll::Pending
                 }
             }
         } else {
-            return Poll::Pending;
-        }
+            Poll::Pending
+        };
     }
 }
 
@@ -293,7 +294,7 @@ impl Router {
     }
     fn peers(&self) -> Vec<VerificationKey> {
         let mut peers = Vec::new();
-        for (port, peer) in &self.ports {
+        for (_port, peer) in &self.ports {
             if let Some(peer) = peer {
                 peers.push(peer.clone());
             }
@@ -314,8 +315,8 @@ impl Router {
         self.public_key
     }
     fn get_peer_on_port(&self, port: Port) -> Option<VerificationKey> {
-        if let Some(peer) = self.ports.get(&port) {
-            return peer.clone();
+        if let Some(peer) = self.ports.get(&port).cloned() {
+            return peer;
         }
         None
     }
@@ -648,7 +649,7 @@ impl Router {
                 }
             }
         }
-        match best_peer {
+        return match best_peer {
             Some(best_peer) => {
                 if best_peer == self.parent() {
                     debug!("Current parent is the best available parent");
@@ -657,14 +658,14 @@ impl Router {
                 let best_peer = best_peer.clone();
                 self.set_parent(best_peer);
                 self.send_tree_announcements_to_all(self.current_announcement());
-                return true;
+                true
             }
             None => {
                 debug!("I am root");
                 self.become_root();
-                return false;
+                false
             }
-        }
+        };
     }
     fn become_root(&mut self) {
         trace!("Becoming root");
@@ -772,7 +773,7 @@ impl Router {
         let announcement = self.current_announcement();
         if let Some(asc) = &self.ascending_path {
             let ascending = self.paths.get(&asc).unwrap();
-            let asc_peer = self.get_peer_on_port(ascending.source).unwrap();
+            let _asc_peer = self.get_peer_on_port(ascending.source).unwrap();
             if ascending.root == announcement.root {
                 trace!("Not bootstrapping because a valid ascending path is set");
                 return;
@@ -822,7 +823,7 @@ impl Router {
         // parent or ascending paths.
         if self.parent() != self.public_key() {
             if bootstrap && best_key == destination_key {
-                // Bootstraps always start working towards thear root so that they
+                // Bootstraps always start working towards their root so that they
                 // go somewhere rather than getting stuck.
             }
             if Self::dht_ordered(
