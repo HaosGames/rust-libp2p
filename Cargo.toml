@@ -145,6 +145,7 @@ members = [
     "transports/deflate",
     "transports/dns",
     "transports/noise",
+    "transports/pinecone",
     "transports/plaintext",
     "transports/pnet",
     "transports/tcp",
